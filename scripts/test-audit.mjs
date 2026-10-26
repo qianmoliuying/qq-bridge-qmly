@@ -66,6 +66,8 @@ const tests = [
   //   · 静默检测不得冒充 hook 检测（心跳是 SnowLuma 本地定时器无条件发的）；
   //   · 客户端库版本不得低于 bot_status 出现的版本。
   'test-snowluma-upstream-health.mjs',
+  // 记忆/好感/性格系统（纯函数 + SQLite 内存库，无外部依赖）。
+  'test-memory-system.mjs',
 ];
 let failed = 0;
 for (const test of tests) {

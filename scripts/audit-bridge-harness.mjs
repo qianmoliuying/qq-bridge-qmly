@@ -22,6 +22,10 @@ import * as voiceLib from '../src/send-voice-lib.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
+import MemoryStore from '../src/memory-store.js';
+import * as memoryCore from '../src/memory-core.js';
+import * as affinityEngine from '../src/affinity.js';
+import * as personalityEngine from '../src/personality.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {} } = {}) {
@@ -31,7 +35,12 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   fs.writeFileSync(path.join(temp, 'config.json'), JSON.stringify({
     dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
     allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
-    consoleToken: 'fixture-console-token', slang: { enabled: false }, ...config,
+    consoleToken: 'fixture-console-token', slang: { enabled: false },
+    // 记忆/好感/性格的 SQLite 写库默认禁用：测试跑在临时目录，Windows 上
+    // better-sqlite3 会锁住 memory.db 导致 temp 清理失败（EBUSY）。
+    // 写库路径由 scripts/test-memory-system.mjs 独立覆盖。
+    memory: { enabled: false },
+    ...config,
   }));
   if (savedState) fs.writeFileSync(path.join(temp, 'state/sessions.json'), JSON.stringify(savedState));
   // 额外状态文件（用于测试"启动时读到损坏/旧版文件"这类路径）。
@@ -188,6 +197,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt,
+    // 记忆/好感/性格系统（bridge.js 以命名空间形式引用，须整对象注入）
+    MemoryStore, memoryCore, affinityEngine, personalityEngine,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
     sniffImage: mediaNormalize.sniffImage,

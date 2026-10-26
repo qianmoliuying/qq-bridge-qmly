@@ -54,6 +54,10 @@ import {
   applyStickerNote,
   markStickerUsed
 } from './sticker-lib.js';
+import MemoryStore from './memory-store.js';
+import * as memoryCore from './memory-core.js';
+import * as affinityEngine from './affinity.js';
+import * as personalityEngine from './personality.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -1000,6 +1004,19 @@ function loadConfig() {
   if (roleInjectMaxChars !== cfg.role.maxInjectChars) {
     log(`人格注入上限已按范围校正为 ${roleInjectMaxChars} 字符（配置值 ${cfg.role.maxInjectChars}，允许 1000~20000）`);
   }
+
+  // 记忆 / 好感度 / 性格系统配置（新）。storePath 默认落在 state/ 下（随状态目录 ACL 加固）。
+  const archiveHourRaw = Number(file.memory?.archiveHour);
+  const archiveHour = Number.isFinite(archiveHourRaw) && archiveHourRaw >= 0 && archiveHourRaw <= 23
+    ? archiveHourRaw : 3;
+  cfg.memory = {
+    storePath: path.join(STATE_DIR, 'memory.db'),
+    archiveHour,
+    contextQuotaDefault: Number.isFinite(Number(file.memory?.contextQuotaDefault))
+      ? Math.min(16, Math.max(3, Math.round(Number(file.memory.contextQuotaDefault))))
+      : 8,
+    enabled: file.memory?.enabled !== false
+  };
 
   return cfg;
 }
@@ -6637,7 +6654,7 @@ async function main() {
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_append' }, 403); return; }
           const st = getSocialV2State(key);
-          appendMemoryV2(st, category, content, extra);
+          appendMemoryV2(st, category, content, extra, key);
           sendJson({ ok: true, key, category, content, memory: formatMemoryV2(st) });
           return;
         }
@@ -6777,6 +6794,106 @@ async function main() {
           sendJson({ ok: true, key, category: category || 'all', memory: formatMemoryV2(st) });
           return;
         }
+        // ── 好感度/性格系统（reserved2）：查询、手动调整、记忆检索、手动归档 ──
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/affinity') {
+          const key = String(url.searchParams.get('key') ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          const st = getSocialV2State(key);
+          const members = Object.entries(st.memberImpressions ?? {})
+            .filter(([, im]) => im && typeof im === 'object')
+            .map(([name, im]) => {
+              const score = Number(im.affinity) || affinityEngine.AFFINITY_DEFAULT;
+              const lv = affinityEngine.levelOf(score);
+              return {
+                name,
+                affinity: score,
+                level: lv.level,
+                levelLabel: lv.label,
+                interactionCount: Number(im.interactionCount) || 0,
+                mentionedCount: Number(im.mentionedCount) || 0,
+                personality: im.personality || null,
+                ruleTags: personalityEngine.hasEnoughSample(im) ? personalityEngine.inferFromStats(im) : [],
+                tendency: personalityEngine.tendencyHint(score, im?.personality?.tags || []),
+                reasons: Array.isArray(im.affinityReasons) ? im.affinityReasons.slice(-5) : []
+              };
+            })
+            .sort((a, b) => b.affinity - a.affinity);
+          sendJson({
+            ok: true,
+            key,
+            sessionAffinity: sessionAffinityScore(st),
+            sessionQuota: affinityEngine.quotaOf(sessionAffinityScore(st)),
+            members
+          });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/affinity-set') {
+          // 仅控制台（管理员）：AI 不得自行修改好感/性格
+          if (req.headers['x-agent-token']) { sendJson({ ok: false, error: 'AI 不能修改好感度' }, 403); return; }
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const member = String(body.member ?? '').trim();
+          if (!key || !member) { sendJson({ ok: false, error: 'key 和 member 不能为空' }, 400); return; }
+          const st = getSocialV2State(key);
+          const m = memberStateOf(st, member);
+          if (!m) { sendJson({ ok: false, error: '成员无效' }, 400); return; }
+          if (body.affinity != null) {
+            const v = Math.max(0, Math.min(100, Math.round(Number(body.affinity) || 0)));
+            m.affinity = v;
+            m.lastDeltaAt = Date.now();
+            if (Array.isArray(m.affinityReasons)) {
+              m.affinityReasons.push({ at: Date.now(), delta: v - (Number(m.affinity) - v), reason: '控制台手动调整', source: 'console' });
+              m.affinityReasons = m.affinityReasons.slice(-affinityEngine.RULE_PARAMS.maxReasons);
+            }
+          }
+          if (Array.isArray(body.personalityTags)) {
+            const persona = applyPersonaFromConsole(m, body.personalityTags, body.personalitySummary);
+          } else if (typeof body.personalitySummary === 'string') {
+            const persona = applyPersonaFromConsole(m, m.personality?.tags || [], body.personalitySummary);
+          }
+          saveSocialV2State();
+          const store = getMemoryStore();
+          if (store && m.personality) { try { store.upsertPersonality(key, member, m.personality, Date.now()); } catch {} }
+          sendJson({ ok: true, key, member, affinity: m.affinity, personality: m.personality });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/memory-search') {
+          const key = String(url.searchParams.get('key') ?? '').trim();
+          const q = String(url.searchParams.get('q') ?? '').trim();
+          if (!key || !q) { sendJson({ ok: false, error: 'key 和 q 不能为空' }, 400); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：记忆检索' }, 403); return; }
+          const st = getSocialV2State(key);
+          const entries = memoryCore.entriesFromState(st);
+          const now = Date.now();
+          const byId = new Map(entries.map((e) => [e.id, e]));
+          const affinityOf = (e) => e.target ? memberAffinityOf(st, e.target) : sessionAffinityScore(st);
+          const inMemory = entries.length
+            ? memoryCore.hitLookup(memoryCore.buildMemoryIndex(entries), byId, q, 5, now, affinityOf)
+            : [];
+          // 库兜底（内存未命中或补足时）
+          let fromStore = [];
+          const store = getMemoryStore();
+          if (store && inMemory.length < 5) {
+            try { fromStore = store.search(key, q, { limit: 5 }); } catch {}
+          }
+          sendJson({
+            ok: true,
+            key,
+            hits: inMemory.map((h) => ({ text: h.entry.text, type: h.entry.type, tags: h.entry.tags, score: Math.round(h.score * 100) / 100, block: memoryCore.formatCompact(h.entry, now) })),
+            storeHits: fromStore.map((e) => ({ text: e.text, type: e.type, tags: e.tags, block: memoryCore.formatCompact({ ...e, type: e.type }, now) }))
+          });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/archive-now') {
+          if (req.headers['x-agent-token']) { sendJson({ ok: false, error: 'AI 不能触发归档' }, 403); return; }
+          await archiveColdMemories();
+          sendJson({ ok: true });
+          return;
+        }
+
         // ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ─────────────────
         if (req.method === 'GET' && url.pathname === '/api/socialV2/slang/query') {
           const key = String(url.searchParams.get('key') ?? '').trim();
@@ -8799,81 +8916,337 @@ async function main() {
     return defaultMs;
   }
 
-  function formatMemoryV2(st) {
+  // ── 记忆/好感/性格系统（memory-core / affinity / personality / memory-store）────
+  // SQLite 惰性初始化：失败时降级为纯内存运行（不阻塞桥接）。
+  let memoryStore = null;
+  let memoryStoreBroken = false;
+  function getMemoryStore() {
+    if (memoryStore) return memoryStore;
+    if (memoryStoreBroken || cfg.memory.enabled === false) return null;
+    try {
+      memoryStore = new MemoryStore(cfg.memory.storePath);
+    } catch (error) {
+      memoryStoreBroken = true;
+      log(`⚠️ 记忆库初始化失败，降级为纯内存运行（${error?.message ?? error}）`);
+      return null;
+    }
+    return memoryStore;
+  }
+
+  /** 取/建成员好感状态（挂在 memberImpressions[name] 扩展字段，与旧结构兼容）。 */
+  function memberStateOf(st, name) {
+    if (!st?.memberImpressions || typeof st.memberImpressions !== 'object') return null;
+    const safe = String(name || '').trim();
+    if (!safe || ['__proto__', 'constructor', 'prototype'].includes(safe)) return null;
+    let m = st.memberImpressions[safe];
+    if (!m || typeof m !== 'object') {
+      m = { traits: [], interactionCount: 0, lastSeenAt: 0 };
+      st.memberImpressions[safe] = m;
+    }
+    if (typeof m.affinity !== 'number' || !Number.isFinite(m.affinity)) m.affinity = affinityEngine.AFFINITY_DEFAULT;
+    if (typeof m.interactionCount !== 'number') m.interactionCount = 0;
+    if (typeof m.mentionedCount !== 'number') m.mentionedCount = 0;
+    if (!Array.isArray(m.affinityReasons)) m.affinityReasons = [];
+    if (typeof m.lastDeltaAt !== 'number') m.lastDeltaAt = 0;
+    if (typeof m.lastAiJudgeAt !== 'number') m.lastAiJudgeAt = 0;
+    if (typeof m.lastPersonaJudgeAt !== 'number') m.lastPersonaJudgeAt = 0;
+    if (!m.stats || typeof m.stats !== 'object') m.stats = personalityEngine.createPersonalityStats();
+    if (!m.personality || typeof m.personality !== 'object') m.personality = null;
+    return m;
+  }
+
+  function memberAffinityOf(st, name) {
+    const m = memberStateOf(st, name);
+    return m ? Number(m.affinity) || affinityEngine.AFFINITY_DEFAULT : affinityEngine.AFFINITY_DEFAULT;
+  }
+
+  /** 会话好感（成员平均），作配额兜底。 */
+  function sessionAffinityScore(st) {
+    const scores = Object.values(st?.memberImpressions ?? {})
+      .filter((m) => m && Number.isFinite(Number(m?.affinity)))
+      .map((m) => Number(m.affinity));
+    return affinityEngine.sessionAffinity(scores);
+  }
+
+  /** 控制台手动设置性格标签（source=console）。 */
+  function applyPersonaFromConsole(m, tags, summary) {
+    if (!m) return null;
+    m.personality = {
+      tags: [...new Set((Array.isArray(tags) ? tags : []).map((t) => String(t).trim()).filter(Boolean))]
+        .slice(0, personalityEngine.PERSONALITY_PARAMS.maxTags),
+      summary: String(summary || '').slice(0, personalityEngine.PERSONALITY_PARAMS.summaryMaxChars),
+      source: 'console',
+      updatedAt: Date.now()
+    };
+    return m.personality;
+  }
+
+  /**
+   * 好感/性格规则钩子：对一条入站消息更新成员的发言统计与好感分，
+   * 规则初判性格标签（AI 未判定时兜底），并即时写库。
+   * 调用方负责在需要时 saveSocialV2State()。
+   */
+  function touchAffinityAndPersona(st, key, senderName, event, textContent, plainContent) {
+    const m = memberStateOf(st, senderName);
+    if (!m) return null;
+    const selfId = String(event?.self_id ?? '');
+    const mentioned = (selfId && String(textContent || '').includes('@' + selfId))
+      || (selfNickname && String(textContent || '').includes(selfNickname));
+    const text = String(plainContent || textContent || '');
+    const sentiment = affinityEngine.detectSentiment(text);
+    personalityEngine.updatePersonalityStats(m.stats, {
+      text,
+      hasSticker: Array.isArray(event?.message)
+        ? event.message.some((s) => s && (s.type === 'face' || s.type === 'image'))
+        : false,
+      hasEmoji: /[\u{1F300}-\u{1FAFF}\u2600-\u27BF]/u.test(textContent || ''),
+      isQuestion: /[?？]$/.test(text.trim()),
+      mentionAi: /(?:小鲸鱼|大肥鱼|deepseek|gpt|机器人|@)/.test(textContent || ''),
+      now: Date.now()
+    });
+    const delta = affinityEngine.applyRuleDelta(m, {
+      interaction: true,
+      mentioned,
+      sentiment,
+      now: Date.now(),
+      source: 'rule'
+    });
+    // 规则初判性格（样本充分且尚无 AI 判定时兜底）
+    if (!m.personality && personalityEngine.hasEnoughSample(m)) {
+      const tags = personalityEngine.inferFromStats(m);
+      if (tags.length) m.personality = { tags, summary: '', source: 'rule', updatedAt: Date.now() };
+    }
+    // 即时写库：性格标签（好感快照由每日归档统一做）
+    const store = getMemoryStore();
+    if (store && m.personality) {
+      try { store.upsertPersonality(key, senderName, m.personality, Date.now()); } catch {}
+    }
+    return delta;
+  }
+
+  /**
+   * 重要记忆即时写库：把该会话当前条目中「重要」的写入 SQLite（upsert 幂等）。
+   * 在 append/update 等变更后调用。
+   */
+  function persistImportantEntries(key, st) {
+    const store = getMemoryStore();
+    if (!store) return 0;
+    const now = Date.now();
+    const entries = memoryCore.entriesFromState(st);
+    let n = 0;
+    try {
+      for (const e of entries) {
+        const w = memoryCore.computeWeight(e, now, e.target ? memberAffinityOf(st, e.target) : sessionAffinityScore(st));
+        if (memoryCore.isImportant(e, w)) {
+          store.upsertMemory({ ...e, convKey: key }, w);
+          n += 1;
+        }
+      }
+    } catch (error) {
+      log(`⚠️ 记忆写库失败：${error?.message ?? error}`);
+    }
+    return n;
+  }
+
+  /**
+   * 命中注入：把最近几条消息分词，倒排索引命中相关记忆（≤3 条）单条注入。
+   * 替代全量注入的 token 大头，是「提及时快速引用」的实现。
+   */
+  function memoryHitBlockV2(st) {
     if (!st) return '';
-    const lines = [];
-    const topics = Array.isArray(st.activeTopics) ? st.activeTopics.filter((t) => t && t.text) : [];
-    if (topics.length) {
-      lines.push('【进行中的话题】');
-      for (const t of topics.slice(-10)) {
-        const ago = t.lastMentionAt ? Math.round((Date.now() - t.lastMentionAt) / 60000) : 0;
-        const stale = t.lastMentionAt && Date.now() - Number(t.lastMentionAt) > 2 * 60 * 60 * 1000 ? '（已搁置）' : '';
-        lines.push(`- ${t.text}${stale}（${ago > 0 ? ago + '分钟前' : '刚刚'}）${t.pendingQuestion ? `；待追问：${t.pendingQuestion}` : ''}`);
-      }
-    }
-    const thoughts = Array.isArray(st.pendingThoughts) ? st.pendingThoughts.filter((t) => t && t.text && (!t.expiresAt || Date.now() < t.expiresAt)) : [];
-    if (thoughts.length) {
-      lines.push('【你想说但还没说的】');
-      for (const t of thoughts.slice(-10)) {
-        lines.push(`- ${t.text}${t.motivation ? `（${t.motivation}）` : ''}`);
-      }
-    }
-    const impressions = st.memberImpressions && typeof st.memberImpressions === 'object' ? st.memberImpressions : {};
-    const names = Object.keys(impressions);
-    if (names.length) {
-      lines.push('【对群友的印象】');
-      for (const name of names.slice(-10)) {
-        const im = impressions[name] || {};
-        const traits = Array.isArray(im.traits) ? im.traits : [];
-        lines.push(`- ${name}：${traits.length ? traits.join('、') : '暂无记录'}（互动 ${Number(im.interactionCount) || 0} 次）`);
-      }
-    }
+    const entries = memoryCore.entriesFromState(st);
+    if (!entries.length) return '';
+    const recentTexts = [...(Array.isArray(st.recentMessages) ? st.recentMessages : [])]
+      .slice(-4)
+      .map((m) => String(m?.text || m?.plain || ''))
+      .filter(Boolean)
+      .join(' ');
+    if (!recentTexts.trim()) return '';
+    const now = Date.now();
+    const index = memoryCore.buildMemoryIndex(entries);
+    const byId = new Map(entries.map((e) => [e.id, e]));
+    const hits = memoryCore.hitLookup(index, byId, recentTexts, 3, now,
+      (e) => e.target ? memberAffinityOf(st, e.target) : sessionAffinityScore(st));
+    if (!hits.length) return '';
+    const lines = ['【相关记忆】'];
+    for (const { entry } of hits) lines.push(memoryCore.formatCompact(entry, now));
     return lines.join('\n');
   }
 
-  function appendMemoryV2(st, category, content, extra = {}) {
+  // ── 每日 3:00 归档（冷数据出内存 → 落库 → 好感快照 → 重建）────────────────
+  const ARCHIVE_META_FILE = path.join(STATE_DIR, 'archive-meta.json');
+
+  async function archiveColdMemories(nowMs = Date.now()) {
+    const store = getMemoryStore();
+    if (!store) return;
+    try {
+      const now = Number(nowMs) || Date.now();
+      let archived = 0;
+      for (const key of socialV2.conversations.keys()) {
+        const st = socialV2.conversations.get(key);
+        if (!st) continue;
+        const entries = memoryCore.entriesFromState(st);
+        if (entries.length) {
+          const coldIds = [];
+          for (const e of entries) {
+            const w = memoryCore.computeWeight(e, now, e.target ? memberAffinityOf(st, e.target) : sessionAffinityScore(st));
+            const age = now - (Number(e.lastMentionAt) || Number(e.createdAt) || now);
+            if (w < memoryCore.WEIGHT_PARAMS.coldWeight && age > memoryCore.WEIGHT_PARAMS.coldAgeMs) {
+              store.upsertMemory({ ...e, convKey: key }, w);
+              coldIds.push(e.id);
+            } else if (memoryCore.isImportant(e, w)) {
+              store.upsertMemory({ ...e, convKey: key }, w);
+            }
+          }
+          if (coldIds.length) {
+            store.archiveEntries(key, coldIds, now);
+            const coldSet = new Set(coldIds);
+            if (Array.isArray(st.activeTopics)) st.activeTopics = st.activeTopics.filter((t) => t && !coldSet.has(t.id || `mem_active_${t.text}`));
+            if (Array.isArray(st.pendingThoughts)) st.pendingThoughts = st.pendingThoughts.filter((t) => t && !coldSet.has(t.id || `mem_thought_${t.text}`));
+            if (st.memberImpressions && typeof st.memberImpressions === 'object') {
+              for (const [name, im] of Object.entries(st.memberImpressions)) {
+                if (coldSet.has(im?.id || `mem_imp_${name}`)) delete st.memberImpressions[name];
+              }
+            }
+            archived += coldIds.length;
+          }
+        }
+        // 好感度 + 性格快照（每日归档）
+        const members = [];
+        for (const [name, im] of Object.entries(st.memberImpressions ?? {})) {
+          if (!im || typeof im !== 'object') continue;
+          members.push({
+            name,
+            score: Number(im.affinity) || affinityEngine.AFFINITY_DEFAULT,
+            level: affinityEngine.levelOf(im.affinity).level,
+            interactionCount: Number(im.interactionCount) || 0,
+            mentionedCount: Number(im.mentionedCount) || 0
+          });
+          if (im.personality) {
+            try { store.upsertPersonality(key, name, im.personality, now); } catch {}
+          }
+        }
+        if (members.length) store.snapshotAffinity(key, members, now);
+      }
+      store.deleteExpired(now, memoryCore.WEIGHT_PARAMS.deleteArchivedAgeMs);
+      atomicWriteJson(ARCHIVE_META_FILE, { lastArchiveAt: now });
+      log(`记忆归档完成：冷数据 ${archived} 条出内存并落库`);
+    } catch (error) {
+      log(`⚠️ 记忆归档失败：${error?.message ?? error}`);
+    }
+  }
+
+  /** 归档调度：每小时检查一次（命中归档小时前 10 分钟执行）；启动时补跑错过的归档。 */
+  function startArchiveLoop() {
+    setInterval(() => {
+      const d = new Date();
+      if (d.getHours() === (Number(cfg.memory.archiveHour) || 3) && d.getMinutes() < 10) {
+        archiveColdMemories();
+      }
+    }, 60000);
+    try {
+      const meta = readJsonSafe(ARCHIVE_META_FILE);
+      const last = Number(meta?.lastArchiveAt) || 0;
+      if (!last || Date.now() - last > 24 * 60 * 60 * 1000) {
+        setTimeout(() => archiveColdMemories(), 30 * 1000);
+      }
+    } catch {}
+  }
+
+  function formatMemoryV2(st, opts = {}) {
+    if (!st) return '';
+    const now = Date.now();
+    const entries = memoryCore.entriesFromState(st);
+    const blocks = [];
+    if (entries.length) {
+      // 权重 Top-K：个人好感加权排序，会话好感决定配额（好感越高 → 注入越多）。
+      const quota = affinityEngine.quotaOf(sessionAffinityScore(st));
+      const affinityOf = (e) => e.target ? memberAffinityOf(st, e.target) : sessionAffinityScore(st);
+      const block = memoryCore.formatMemoryBlock(entries, { quota, nowMs: now, affinityOf });
+      if (block) blocks.push(block);
+    }
+    // 在场群友：好感 + 性格 + 倾向（最多 6 人，AI 据此对聊天者做出合理倾向）
+    const imps = st.memberImpressions && typeof st.memberImpressions === 'object' ? st.memberImpressions : {};
+    const members = Object.entries(imps)
+      .filter(([, im]) => im && typeof im === 'object')
+      .slice(-6)
+      .map(([name, im]) => ({
+        member: {
+          name,
+          personality: im.personality || null,
+          tags: Array.isArray(im.tags) ? im.tags : [],
+          stats: im.stats || null
+        },
+        affinityScore: Number(im.affinity) || affinityEngine.AFFINITY_DEFAULT,
+        levelLabel: affinityEngine.levelOf(im.affinity).label
+      }));
+    const membersBlock = members.length
+      ? personalityEngine.formatMembersBlock(members, { nowMs: now })
+      : '';
+    if (membersBlock) blocks.push(membersBlock);
+    return blocks.join('\n');
+  }
+
+  function appendMemoryV2(st, category, content, extra = {}, key = '') {
     if (!st) return;
     const text = redactKnownTokensOnly(String(content ?? '')).trim();
     const cat = String(category || '').trim();
+    const now = Date.now();
     // 轻量清理：过期想法移除；超过 24h 未提起的话题移除（避免无限膨胀）。
     if (Array.isArray(st.pendingThoughts)) {
-      st.pendingThoughts = st.pendingThoughts.filter((t) => t && (!t.expiresAt || Date.now() < Number(t.expiresAt)));
+      st.pendingThoughts = st.pendingThoughts.filter((t) => t && (!t.expiresAt || now < Number(t.expiresAt)));
     }
     if (Array.isArray(st.activeTopics)) {
-      st.activeTopics = st.activeTopics.filter((t) => t && (!t.lastMentionAt || Date.now() - Number(t.lastMentionAt) < 24 * 60 * 60 * 1000));
+      st.activeTopics = st.activeTopics.filter((t) => t && (!t.lastMentionAt || now - Number(t.lastMentionAt) < 24 * 60 * 60 * 1000));
     }
     if (cat === 'activeTopic' && text) {
       if (!Array.isArray(st.activeTopics)) st.activeTopics = [];
       const existing = st.activeTopics.find((t) => t && String(t.text || '') === text);
       if (existing) {
-        existing.lastMentionAt = Date.now();
+        existing.lastMentionAt = now;
         if (Array.isArray(extra.participants)) {
           const set = new Set([...(existing.participants || []), ...extra.participants.map((p) => redactKnownTokensOnly(String(p)))]);
           existing.participants = [...set].slice(0, 10);
         }
         if (extra.pendingQuestion) existing.pendingQuestion = truncateText(redactKnownTokensOnly(String(extra.pendingQuestion)), 200);
+        if (!existing.id) existing.id = `mem_active_${existing.text}`.slice(0, 64);
+        if (typeof existing.importance !== 'number') existing.importance = memoryCore.estimateImportance(existing.text);
       } else {
-        st.activeTopics.push({
+        const entry = {
           text: truncateText(text, 200),
-          lastMentionAt: Date.now(),
+          lastMentionAt: now,
+          createdAt: now,
           participants: Array.isArray(extra.participants) ? extra.participants.map((p) => redactKnownTokensOnly(String(p))).slice(0, 10) : [],
-          pendingQuestion: redactKnownTokensOnly(String(extra.pendingQuestion || '')).slice(0, 200)
-        });
+          pendingQuestion: redactKnownTokensOnly(String(extra.pendingQuestion || '')).slice(0, 200),
+          id: `mem_active_${text}`.slice(0, 64),
+          tags: memoryCore.classifyTags({ type: 'activeTopic', text }, now),
+          importance: memoryCore.estimateImportance(text),
+          affinityDelta: Number(extra.affinityDelta) || 0,
+          source: String(extra.source || 'rule')
+        };
+        st.activeTopics.push(entry);
       }
       if (st.activeTopics.length > 20) st.activeTopics.splice(0, st.activeTopics.length - 20);
     } else if (cat === 'pendingThought' && text) {
       if (!Array.isArray(st.pendingThoughts)) st.pendingThoughts = [];
       const existing = st.pendingThoughts.find((t) => t && String(t.text || '') === text);
       if (existing) {
-        existing.createdAt = Date.now();
-        existing.expiresAt = Date.now() + (Number(extra.expiresAtMs) || 2 * 60 * 60 * 1000);
+        existing.createdAt = now;
+        existing.expiresAt = now + (Number(extra.expiresAtMs) || 2 * 60 * 60 * 1000);
         if (extra.motivation) existing.motivation = redactKnownTokensOnly(String(extra.motivation)).slice(0, 50);
+        if (!existing.id) existing.id = `mem_thought_${existing.text}`.slice(0, 64);
+        if (typeof existing.importance !== 'number') existing.importance = memoryCore.estimateImportance(existing.text);
       } else {
         st.pendingThoughts.push({
           text: text.slice(0, 200),
-          createdAt: Date.now(),
-          expiresAt: Date.now() + (Number(extra.expiresAtMs) || 2 * 60 * 60 * 1000),
-          motivation: redactKnownTokensOnly(String(extra.motivation || 'curiosity')).slice(0, 50)
+          createdAt: now,
+          expiresAt: now + (Number(extra.expiresAtMs) || 2 * 60 * 60 * 1000),
+          motivation: redactKnownTokensOnly(String(extra.motivation || 'curiosity')).slice(0, 50),
+          id: `mem_thought_${text}`.slice(0, 64),
+          tags: memoryCore.classifyTags({ type: 'pendingThought', text }, now),
+          importance: memoryCore.estimateImportance(text),
+          affinityDelta: Number(extra.affinityDelta) || 0,
+          source: String(extra.source || 'rule')
         });
       }
       if (st.pendingThoughts.length > 20) st.pendingThoughts.splice(0, st.pendingThoughts.length - 20);
@@ -8887,7 +9260,14 @@ async function main() {
       st.memberImpressions[target] = {
         traits,
         interactionCount: (Number(old.interactionCount) || 0) + 1,
-        lastSeenAt: Date.now()
+        lastSeenAt: now,
+        firstSeenAt: Number(old.firstSeenAt) || now,
+        id: old.id || `mem_imp_${target}`.slice(0, 64),
+        tags: memoryCore.classifyTags({ type: 'memberImpression', text, target }, now),
+        importance: Number(old.importance) || memoryCore.estimateImportance(text || target),
+        affinityDelta: Number(old.affinityDelta) || Number(extra.affinityDelta) || 0,
+        source: String(extra.source || old.source || 'rule'),
+        affinity: Number.isFinite(Number(old.affinity)) ? Number(old.affinity) : undefined
       };
       const impressionEntries = Object.entries(st.memberImpressions);
       if (impressionEntries.length > 50) {
@@ -8897,6 +9277,8 @@ async function main() {
         }
       }
     }
+    // 重要记忆即时写库（key 传入时才落库）
+    if (key) persistImportantEntries(key, st);
     saveSocialV2State();
   }
 
@@ -10298,6 +10680,9 @@ async function main() {
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
     const memoryText = formatMemoryV2(st);
     const memoryLine = memoryText ? `${memoryText}\n\n` : '';
+    // 命中注入：最近消息提及时，把相关记忆单条补进来（token 最省的引用方式）
+    const hitText = memoryHitBlockV2(st);
+    const hitLine = hitText ? `${hitText}\n\n` : '';
     // 注意：黑话表不在这里注入，deliverPromptNow 的 withSlangContext 会统一注入，
     // 避免唤醒 prompt 出现两份黑话表。
     const participationText = formatParticipationV2(st);
@@ -10343,7 +10728,7 @@ async function main() {
     const initialPromptLine = initialPromptText ? `${initialPromptText}\n\n` : '';
     // 时间感放在 base 的最末尾：紧接着就是【唤醒】原因与行动指令，位置最显眼。
     const timeSenseLine = buildTimeSenseLine(st);
-    const base = roleLine + identityLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + preSleepLine + timeSenseLine;
+    const base = roleLine + identityLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + hitLine + participationLine + preSleepLine + timeSenseLine;
     // 唤醒原因里的那条消息本身多旧：`atMention@seq194` 这种形态能反查到原消息。
     const triggeredSeq = wakeReasonSeq(reason);
     const triggeredMsg = triggeredSeq ? findV2MessageBySeq(st, triggeredSeq) : null;
@@ -10855,6 +11240,18 @@ async function main() {
     if (!plainContent && !quoteTargetIsSelf) return;
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
     const roleState = readRoleState();
+
+    // 好感/性格规则钩子：对每条有效消息更新发言者的好感分与性格统计（零额外 token）。
+    // 群聊优先取群名片（card），其次昵称；私聊取昵称。
+    const senderName = String(event?.sender?.card || event?.sender?.nickname || event?.user_id || '');
+    if (senderName) {
+      try {
+        const st = getSocialV2State(key);
+        touchAffinityAndPersona(st, key, senderName, event, textContent, plainContent);
+      } catch (error) {
+        log(`好感/性格统计失败：${error?.message ?? error}`);
+      }
+    }
 
     // 若该会话有挂起的提问/审批，先当作回答处理（用当前消息自己的文字，不含引用原文）。
     // 审批只有管理员消息会被消费；群友消息不能因为“审批挂起”而被吞掉，应继续走正常处理。
@@ -12033,6 +12430,7 @@ async function main() {
   startDshWatch();
   startSnowlumaWatch();
   startConsoleServer();
+  startArchiveLoop();
 
   await pumpMux();
 }

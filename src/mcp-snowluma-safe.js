@@ -326,6 +326,8 @@ const TOOL_CONFIG_FLAGS = {
   qq_memory_query: 'memory',
   qq_memory_remove: 'memory',
   qq_memory_clear: 'memory',
+  qq_affinity_query: 'memory',
+  qq_memory_search: 'memory',
   qq_slang_query: 'slangQuery',
   qq_slang_submit: 'slangSubmit',
   qq_send_voice: 'sendVoice',
@@ -995,6 +997,41 @@ server.tool(
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `记忆清空失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'qq_affinity_query',
+  '查看会话内成员的好感度与性格判断（只读）：每个成员的好感分、等级、性格标签、规则倾向建议和最近好感变动原因。说话前先查对方的好感/性格，能帮你把握语气分寸（例如对低好感的毒舌成员保持礼貌、对高好感成员可轻松调侃）。',
+  {
+    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().optional().describe('会话令牌（二代仿真时传；一代仿真/控制台可不传）')
+  },
+  async ({ key, token }) => {
+    try {
+      const data = await agentApi(`/api/socialV2/affinity?key=${encodeURIComponent(key)}`, token ? { headers: { 'x-agent-token': token } } : {});
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `好感度查询失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'qq_memory_search',
+  '按关键词在会话记忆中检索（只读）：对话中提到某人/某事时，用关键词快速找到相关记忆条目（话题/想法/印象），并给出可用于引用的压缩格式。适合“提到某段记忆时快速引用”，避免全量记忆注入消耗 token。',
+  {
+    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().optional().describe('会话令牌（二代仿真时传；一代仿真/控制台可不传）'),
+    q: z.string().describe('检索关键词，如人名、话题词')
+  },
+  async ({ key, token, q }) => {
+    try {
+      const data = await agentApi(`/api/socialV2/memory-search?key=${encodeURIComponent(key)}&q=${encodeURIComponent(String(q || ''))}`, token ? { headers: { 'x-agent-token': token } } : {});
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `记忆检索失败：${error?.message ?? error}` }], isError: true };
     }
   }
 );

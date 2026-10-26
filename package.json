@@ -66,6 +66,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@snowluma/mcp": "^1.14.20",
     "@snowluma/sdk": "^1.14.20",
+    "better-sqlite3": "^13.0.3",
     "js-yaml": "^4.3.2",
     "zod": "^4.4.3"
   }
