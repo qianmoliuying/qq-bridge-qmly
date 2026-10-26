@@ -60,7 +60,16 @@ qq-bridge/
 │   ├── v2-wait.js            #   二代仿真“回合未结束”判断
 │   ├── sensitive.js          #   敏感词正则（日志脱敏）
 │   ├── state-acl.mjs         #   state/ 目录 ACL 加固
-│   └── self-test.js          #   DSH 链路自测入口
+│   ├── self-test.js          #   DSH 链路自测入口
+│   ├── memory-core.js        #   ★ 记忆权重/标签/倒排索引/紧凑格式化（§3.8）
+│   ├── affinity.js           #   ★ 好感度引擎：规则增减 + AI 补判 + 等级配额（§3.8）
+│   ├── personality.js        #   ★ 性格统计初判 + AI 精修 + 倾向映射（§3.8）
+│   └── memory-store.js       #   ★ SQLite 层：memories / affinity_history / personality（§3.8）
+├── launcher/                  # ★ 一键版启动器（SEA 打包，§3.9）
+│   ├── launcher.cjs          #   单文件启动器（编排 DSH/SnowLuma/bridge + 汉化菜单 + --check）
+│   ├── build.mjs             #   SEA 构建脚本（便携目录 + postject 注入 + 冒烟）
+│   ├── README-一键启动.txt   #   汉化使用说明
+│   └── RELEASE-NOTES-qmly-v0.2.1.md  # 发布说明（与 GitHub Release 同步）
 ├── scripts/                  # 测试/探针/运维脚本（87 个，命名约定见 §8）
 ├── dsh/agent-presets/        # DSH agent preset 权威源（qq-chat / qq-chat-v2 的 agent.cordis.yml）
 ├── plugins/
@@ -169,6 +178,21 @@ qq-bridge/
 - 每日 `archiveHour`（默认 3:00）`archiveColdMemories`：冷数据（weight<0.05 且 7 天以上）出内存落库、好感快照、性格入库、删除 30 天前已归档条目；启动补跑错过的归档；
 - 控制台新增 `/api/socialV2/affinity`、`affinity-set`、`memory-search`、`archive-now`；
 - MCP 新增 `qq_affinity_query` / `qq_memory_search`（开关组 `memory`）。
+
+### 3.9 一键版启动器 `launcher/`（新增，SEA 打包）
+
+| 文件 | 职责 |
+| --- | --- |
+| `launcher/launcher.cjs` | **Node SEA 单文件启动器**（CJS——Node 22 的 SEA 加载器走 `embedderRunCjs`，入口必须 `.cjs`）：编排三进程——探测 DSH Web API（`127.0.0.1:3080/api/status`，未就绪自动等待 90s）→ 探测/拉起 SnowLuma（仅当 `launcher-config.json` 配置了启动器路径；未配置只提示，**不打包/不复制本体**，遵守 EULA §5.4）→ 启动桥接（便携 `runtime/node.exe`，缺失回退系统 node）；统一日志写 `logs/launcher.log` 与 `logs/bridge.log`；汉化菜单（1 一键启动 / 2 仅桥接 / 3 配置 SnowLuma / 4 日志 / 5 停止 / 0 退出）；`--check` 自检模式 |
+| `launcher/build.mjs` | SEA 构建脚本：robocopy 整树复制 bridge（`fs.cpSync` 无法复制进自身子目录）→ 便携 node.exe → `--experimental-sea-config` 生成 blob → `npx postject` 注入（需 `shell:true`，Windows 下 npm 是 `.cmd`）→ `--check` 冒烟 |
+| `launcher/README-一键启动.txt` | 汉化使用说明（目录结构、首次配置、日常操作、合规边界） |
+| `launcher/RELEASE-NOTES-qmly-v0.2.1.md` | v0.2.1-qmly.1 发布说明（与 GitHub Release 正文同步） |
+| `dist/一键版/`（`.gitignore` 排除） | 构建产物：`一键启动.exe` + `runtime/node.exe` + `bridge/` 完整副本 + `launcher-config.json` + `logs/`，约 217MB，随 GitHub Releases 发布（tag `v0.2.1-qmly.1`） |
+
+关键设计点：
+- **启动器零业务逻辑**：只做进程编排与日志归拢，不含 QQ/DSH 协议代码；`bridge.js` 仍是唯一内核。
+- **合规**：SnowLuma 只探测+引导（用户拍板）；DSH 由 DeepSeek Harness 桌面版提供；`config.json` / `state/` 等敏感数据不进便携包也不进仓库。
+- **重新构建**：`node launcher/build.mjs`（需 Node ≥22 + 网络 `npx postject`）。
 
 
 

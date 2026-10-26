@@ -12,11 +12,20 @@
 | 文档 | 一句话说明 | 状态 |
 | --- | --- | --- |
 | [guides/PROJECT_GUIDE.md](guides/PROJECT_GUIDE.md) | **权威项目说明书**（113 KB / 1450+ 行）：架构、内外核划分、数据流、配置全解、安全机制、调试与改进指南，含 2026-08-20 ~ 2026-09-11 的逐轮更新记录 | ✅ **唯一权威版本**（另一份同名精简版已归档到 legacy，见下） |
+| [guides/PROJECT_STRUCTURE_GUIDE.md](guides/PROJECT_STRUCTURE_GUIDE.md) | **代码导读**（本分支新增）：`bridge.js` 全量行号分区表、目录结构、记忆/好感/性格系统说明（§3.8）、一键版启动器（§3.9） | ✅ 本分支新增 |
 | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) | DSH 端安装说明：`qq-chat` / `qq-chat-v2` preset 与三个 MCP server 怎么挂到目标设备的 DSH 上 | ✅ |
 | [guides/VOICE.md](guides/VOICE.md) | 语音发送全解：独立工具（`voice-tool/` 的图形界面与命令行）、桥接 CLI、AI 工具、控制台面板，以及**工具拆出后的配置解析顺序** | ✅ 2026 整理时已更新（工具移到上一级 `voice-tool/`） |
 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md) | 控制台「令牌与花费」看板：数据来源、计价口径（峰谷分时）、API、配置 | ✅ |
 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md) | 控制台离线预览（`npm run preview:console`）与离线浏览器回归（`npm run test:console-ui`）怎么用 | ✅ 2026 整理时自 `scripts/` 移入 |
 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) | **安全基线与威胁模型**：威胁主体、已实现的边界（准入/工具面/出站/控制台/落盘/网络）、已知残余风险、发布前回归清单、改动检查单 | ✅ **改动安全相关代码前必读**（2026-09-20 新增） |
+
+**本分支新增文档**（记忆/好感/性格系统 + 一键版）：
+
+| 文档 | 一句话说明 | 状态 |
+| --- | --- | --- |
+| [../launcher/README-一键启动.txt](../launcher/README-一键启动.txt) | **一键版使用说明**：便携目录结构、首次配置（SnowLuma 路径）、一键启动/停止、日志位置、合规边界 | ✅ 本分支新增 |
+| [../launcher/RELEASE-NOTES-qmly-v0.2.1.md](../launcher/RELEASE-NOTES-qmly-v0.2.1.md) | **v0.2.1-qmly.1 发布说明**：记忆/好感/性格系统 + 一键版功能清单、与原分支区别、MIT 合规声明 | ✅ 本分支新增（内容与 GitHub Release 同步） |
+| [guides/PROJECT_STRUCTURE_GUIDE.md](guides/PROJECT_STRUCTURE_GUIDE.md) §3.8 | 记忆/好感/性格系统实现说明（模块职责、bridge 接线、配置段） | ✅ 本分支新增 |
 
 ## design/ —— 设计与规划（读设计意图用）
 
@@ -65,7 +74,9 @@
 | 我想…… | 看这个 |
 | --- | --- |
 | 搞懂整体架构 / 全部配置项 | [guides/PROJECT_GUIDE.md](guides/PROJECT_GUIDE.md) |
+| 快速读懂代码 / 记忆系统 / 一键版 | [guides/PROJECT_STRUCTURE_GUIDE.md](guides/PROJECT_STRUCTURE_GUIDE.md)（本分支新增） |
 | 在新设备上把 qq-bridge 接进 DSH | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) |
+| 一键启动便携版（exe） | [../launcher/README-一键启动.txt](../launcher/README-一键启动.txt) |
 | 发语音 / 换 QQ 账号后语音工具 401 | [guides/VOICE.md](guides/VOICE.md)（独立工具在仓库上一级 `../voice-tool/`） |
 | 看 AI 烧了多少钱 / 计价口径 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md)、[audits/TOKEN_COST_ANALYSIS.md](audits/TOKEN_COST_ANALYSIS.md) |
 | 改控制台界面并做离线回归 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md)、[audits/CONSOLE_UI_REDESIGN_REPORT.md](audits/CONSOLE_UI_REDESIGN_REPORT.md) |

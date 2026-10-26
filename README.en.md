@@ -1,5 +1,36 @@
 # QQ ↔ DeepSeek Harness Bridge (qq-bridge)
 
+> 🍴 **This branch (`qq-bridge-qmly`)**
+>
+> This repository is a **fork / derivative branch** of
+> [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) (upstream `v0.2.1-r1`).
+> All upstream features and docs are preserved; this branch **adds** the following:
+>
+> 1. **Memory / Affinity / Personality system** (`src/memory-core.js`, `src/affinity.js`, `src/personality.js`,
+>    `src/memory-store.js`): weighted memories (importance × half-life decay × affinity factor), automatic tag
+>    classification, SQLite persistence (`state/memory.db`, better-sqlite3), daily 3:00 cold-data archiving,
+>    Chinese 2-gram inverted index for instant memory lookup, affinity-based context quota (higher affinity →
+>    more memories injected), personality profiling with AI refinement, and per-member
+>    "impression | name | personality tags | affinity score (tier) | tendency" lines in the wake prompt;
+>    new MCP tools `qq_affinity_query` / `qq_memory_search`.
+> 2. **One-click launcher** (`launcher/`): a portable bundle that orchestrates DSH + SnowLuma + the bridge from a
+>    single exe (`一键启动.exe`, Node SEA; Chinese menu, unified logs, `--check` self-test). Build with
+>    `node launcher/build.mjs`; the portable bundle ships via GitHub Releases (not in the repo).
+> 3. Regression suite `scripts/test-memory-system.mjs` (21 assertions) wired into `npm run test:audit`;
+>    code guide updated in [docs/guides/PROJECT_STRUCTURE_GUIDE.md](docs/guides/PROJECT_STRUCTURE_GUIDE.md) §3.8.
+>
+> **Relation to upstream**: this branch runs standalone and can be merged back upstream at any time. Release tags
+> follow `v<upstream-version>-qmly.<n>` (current: `v0.2.1-qmly.1`). Usage: [launcher/README-一键启动.txt](launcher/README-一键启动.txt).
+>
+> **Compliance statement (we follow the upstream open-source rules)**:
+> - MIT License, as upstream (`LICENSE` keeps the original copyright notice untouched).
+> - SnowLuma boundary is unchanged: **no bundling, copying or automated deployment of the SnowLuma app itself**
+>   (EULA §5.4, proprietary native components). The one-click launcher only **probes + guides** a SnowLuma you
+>   installed yourself; DSH is provided by the DeepSeek Harness desktop app.
+> - Privacy: `config.json` (QQ tokens), `state/` (memory db / session map), `audio/` are never committed.
+
+The following is the upstream README body (features, architecture, install & usage per upstream; additions above).
+
 > Connect QQ messages to DeepSeek Harness (DSH) agents: QQ friends/groups become DSH conversations, and agent replies (including questions and tool approvals) are sent back to QQ.
 
 > ⚠️ **Current release `v0.2.1-r1`, targets DSH 0.2.1-rc.2** (also compatible with 0.2.0-rc.2; verified item by item on both — run `npm run verify:adaptation`). It uses the persistent local signing key to **mint the session Cookie offline**, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. Reading the launch token out of the old guard logs has not worked since DSH 0.1.7 (the token is generated per process and never written to disk). Agent presets are `@deepseek-ai/dsh-agent-preset` Cordis rows since DSH 0.1.7 (the `~/.dsh/.agent-presets/` directory mechanism is gone). On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.0); for **DSH 0.1.5-rc.1** use [`v0.1.5`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.5); for **DSH 0.1.7-rc.2** use [`v0.1.7`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.7).
