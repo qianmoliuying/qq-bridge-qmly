@@ -13,6 +13,13 @@
 >    （Node SEA 打包 `一键启动.exe`，汉化菜单、统一日志、`--check` 自检），构建脚本 `launcher/build.mjs`。
 > 3. 回归测试 `scripts/test-memory-system.mjs`（21 项断言）并入 `npm run test:audit`；代码导读更新见
 >    [docs/guides/PROJECT_STRUCTURE_GUIDE.md](docs/guides/PROJECT_STRUCTURE_GUIDE.md) §3.8。
+> 4. **LLM 直连双模式**（`src/llm-client.js`、`src/direct-engine.js`）：参考 [astrbot](https://github.com/AstrBotDevs/AstrBot)
+>    的 Provider 抽象与动态上下文设计，新增 `llm.mode: "dsh" | "direct"` 双后端 —— `dsh` 沿用原分支的
+>    DeepSeek Harness Web API；`direct` 由桥接**直接调用 OpenAI 兼容端点**（baseUrl + apiKey + model，不依赖 DSH 进程），
+>    chat / 一代仿真 / 管理员私聊回复自动转发，二代仿真（reserved2）AI 自主收发走 **function calling**（40 个工具，
+>    与 DSH 侧共用同一份 MCP 工具定义，执行仍走原 handler 的安全校验）。控制台新增「LLM 直连」页
+>    （后端切换、Provider 表单、连通性测试、记忆/好感/性格管理）。动态上下文（记忆/好感/性格/黑话）放
+>    user 消息而非 system prompt，避免破坏服务端提示词缓存。测试 `scripts/test-direct-engine.mjs`（30 项断言，mock LLM 端点离线运行）并入 `npm run test:audit`。
 >
 > **与原分支的关系**：本分支可独立运行，也可随时合回上游；发布 tag 遵循 `v<上游版本>-qmly.<序号>` 命名
 > （本分支当前 `v0.2.1-qmly.1`）。详细区别与使用见 [launcher/README-一键启动.txt](launcher/README-一键启动.txt)。

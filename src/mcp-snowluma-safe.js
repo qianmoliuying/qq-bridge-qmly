@@ -9,10 +9,10 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { z } from 'zod';
+import { z, toJSONSchema } from 'zod';
 // 出站文本的敏感信息拦截**统一由桥接负责**（bridge.js 的 auditAndSend / 各发送端点的
 // SENSITIVE_RE 校验）：所有 QQ 发送都经由桥接 HTTP API，因此 MCP 侧不再重复实现一遍。
 // 这里 import 只用于「出站审计口径一致」的说明，不在 MCP 内做拦截——
@@ -295,6 +295,23 @@ async function legacyReadToolAllowed() {
 
 const server = new McpServer({ name: 'snowluma-safe', version: '0.2.1-r1' });
 
+// ── 工具定义收集（直连模式共用单一事实来源）────────────────────────────────
+// direct 模式的 function calling 与 DSH 的 MCP 工具共用同一份定义：
+// 工具名 / 描述 / 参数 JSON Schema / 执行器全部同源，保证两种投递后端行为一致，
+// 也避免在 llm 侧手工复制 27 份 schema 造成漂移。
+// TOOL_DEFS 只在 server.tool 的注册过滤器里收集，因此「被开关关掉的工具」
+// 同样不会出现在直连模式 —— 与 DSH 侧的注册期过滤语义完全一致。
+const TOOL_DEFS = [];
+
+export function getToolDefs() {
+  return TOOL_DEFS.map((d) => ({
+    name: d.name,
+    description: d.description,
+    parameters: d.parameters,
+    execute: d.execute
+  }));
+}
+
 // ── 工具开关必须在**注册期**生效，而不是只在校验期 ──────────────────────────
 //
 // 为什么：每个工具的描述 + 参数 schema 都会随 system prompt 在**每一次**请求里重发
@@ -356,6 +373,24 @@ const disabledTools = [];
     if (flag && cfg.socialV2?.tools?.[flag] === false) {
       disabledTools.push(`${name}(${flag})`);
       return undefined;
+    }
+    // 统一四参形式 (name, description, paramsSchema, cb)；收集进 TOOL_DEFS 供直连模式复用。
+    // paramsSchema 两种形态：zod schema（多数工具）或普通对象（qq_status 用 `{}`）。
+    // zod 实例 → toJSONSchema 转换；普通对象 → 直接当作 JSON Schema 使用。
+    const [description, paramsSchema, cb] = rest.length === 3 ? rest : [undefined, rest[0], rest[1]];
+    if (cb && paramsSchema && typeof paramsSchema === 'object') {
+      try {
+        const isZod = typeof paramsSchema.parse === 'function' || typeof paramsSchema._parse === 'function';
+        const jsonSchema = isZod ? toJSONSchema(paramsSchema) : paramsSchema;
+        if (jsonSchema && typeof jsonSchema === 'object') {
+          TOOL_DEFS.push({
+            name: String(name),
+            description: String(description ?? ''),
+            parameters: jsonSchema,
+            execute: cb
+          });
+        }
+      } catch { /* schema 转换失败不影响 MCP 注册 */ }
     }
     return registerTool(name, ...rest);
   };
@@ -1442,4 +1477,9 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
   );
 }
 
-await server.connect(new StdioServerTransport());
+// 只在本文件被**直接执行**（DSH 以 stdio 方式 spawn 它）时才连接传输；
+// 被 bridge（直连模式）import 复用工具定义时不得启动 stdio，否则 import 即挂起。
+const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+if (isMain) {
+  await server.connect(new StdioServerTransport());
+}

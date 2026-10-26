@@ -68,6 +68,10 @@ const tests = [
   'test-snowluma-upstream-health.mjs',
   // 记忆/好感/性格系统（纯函数 + SQLite 内存库，无外部依赖）。
   'test-memory-system.mjs',
+  // 直连模式（llm-client + direct-engine）：本地 mock OpenAI 端点，
+  // 覆盖文本/tool_calls 解析、错误分类、参数容错、工具循环、触顶收敛、
+  // fresh 语义、会话隔离与自动重试（离线，不发真实请求）。
+  'test-direct-engine.mjs',
 ];
 let failed = 0;
 for (const test of tests) {

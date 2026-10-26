@@ -3,7 +3,7 @@
 > 一句话说明每个顶层目录干什么、`scripts/` 里的命名约定是什么、哪些脚本像是过期的一次性产物。
 > 本文**只描述现状**，不构成改动指令。文档索引见 [README.md](README.md)。
 >
-> 最后核对：2026-09-29（v0.2.0 / DSH 0.2.0-rc.2 适配）。新增目录/脚本时请顺手补一行。
+> 最后核对：2026-10-26（v0.2.1-qmly 直连双模式）。新增目录/脚本时请顺手补一行。
 
 ---
 
@@ -21,7 +21,7 @@ DSH/                         ← 工作区根（不是仓库根）
 
 | 目录 | 作用 | 能不能删/动 |
 | --- | --- | --- |
-| `src/` | **桥接内核**：主程序、DSH 客户端、三个 MCP server、黑话/表情/语音共享库，以及**本分支新增的记忆/好感/性格系统**（`memory-core.js`、`affinity.js`、`personality.js`、`memory-store.js`） | 不能动。`bridge.js` 是主程序（约 10,400 行，QSH 计划拆分）；`voice-core.js` 与 `snowluma-conn.js` 是**独立工具也在用的单一实现**。**目录里只应有 `.js`**：曾经的 `bridge.js.bak-*` 会污染全局搜索并看起来像 module，2026-09-20 已移出（见下） |
+| `src/` | **桥接内核**：主程序、DSH 客户端、三个 MCP server、黑话/表情/语音共享库，以及**本分支新增的记忆/好感/性格系统**（`memory-core.js`、`affinity.js`、`personality.js`、`memory-store.js`）与 **LLM 直连双模式**（`llm-client.js`：零依赖 OpenAI 兼容客户端；`direct-engine.js`：直连会话引擎 + function calling 工具循环） | 不能动。`bridge.js` 是主程序（约 10,400 行，QSH 计划拆分）；`voice-core.js` 与 `snowluma-conn.js` 是**独立工具也在用的单一实现**。**目录里只应有 `.js`**：曾经的 `bridge.js.bak-*` 会污染全局搜索并看起来像 module，2026-09-20 已移出（见下） |
 | `scripts/` | 调试 / 测试 / 一次性运维脚本（见第二节命名约定） | 测试脚本不能删；`cleanup-*` / `fix-*` / `patch-*` / `diag-*` 多为历史遗留 |
 | `launcher/` | **一键版启动器（本分支新增）**：`launcher.cjs`（Node SEA 单文件启动器：探测 DSH 3080、引导 SnowLuma、启动桥接、统一日志、汉化菜单、`--check` 自检）、`build.mjs`（SEA 构建脚本）、`README-一键启动.txt`、`RELEASE-NOTES-qmly-v0.2.1.md`。产物 `dist/一键版/` 被 `.gitignore` 排除，随 GitHub Releases 发布 | 可独立构建；`npm install` 不碰它 |
 | `dsh/` | 要装进 DSH 的东西：`agent-presets/qq-chat`、`agent-presets/qq-chat-v2`（preset 的**权威源**，含工具白名单 `qq-tool-restrict.mjs` 的 re-export 壳）。DSH 0.1.7 起 preset 以 bundle patch 形式安装，patch 由 `scripts/build-agent-preset-patches.mjs` 从这里的源生成到 `plugins/qq-agent-presets/presets/` | 改 preset 会影响所有人设行为；改完必须重新生成 patch |

@@ -26,6 +26,13 @@ import MemoryStore from '../src/memory-store.js';
 import * as memoryCore from '../src/memory-core.js';
 import * as affinityEngine from '../src/affinity.js';
 import * as personalityEngine from '../src/personality.js';
+// 直连模式（llm-client / direct-engine / MCP 工具定义收集）：
+// bridge.js 顶层 import 会被 VM 剥离，必须在此作为真实模块注入 context。
+// mcp-snowluma-safe.js 的 isMain 守卫（process.argv[1] === import.meta.url）在
+// 测试进程里为 false，不会启动 stdio 连接。
+import { chatCompletions } from '../src/llm-client.js';
+import { createDirectEngine } from '../src/direct-engine.js';
+import { getToolDefs as getDirectToolDefs } from '../src/mcp-snowluma-safe.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {} } = {}) {
@@ -199,6 +206,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt,
     // 记忆/好感/性格系统（bridge.js 以命名空间形式引用，须整对象注入）
     MemoryStore, memoryCore, affinityEngine, personalityEngine,
+    // 直连模式：bridge.js 顶层 import 被剥离后的三个绑定
+    createDirectEngine, getDirectToolDefs, chatCompletions,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
     sniffImage: mediaNormalize.sniffImage,

@@ -27,6 +27,9 @@ import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, formatDuration, in
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
+import { createDirectEngine } from './direct-engine.js';
+import { getToolDefs as getDirectToolDefs } from './mcp-snowluma-safe.js';
+import { chatCompletions } from './llm-client.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
 import {
@@ -697,6 +700,22 @@ function loadConfig() {
     questionTimeoutMs: file.questionTimeoutMs ?? 5 * 60 * 1000,
     consolePort: file.consolePort ?? 3100,
     consoleToken: file.consoleToken ?? '',
+    // ── 直连模式（双模式并存：dsh | direct）──────────────────────────────────
+    // direct = 不调用 DSH Web API，由桥接直接请求 OpenAI 兼容 LLM 端点
+    // （参考 astrbot 的 Provider 抽象）。默认 dsh（保持原行为）；控制台可切换。
+    llm: {
+      mode: file.llm?.mode ?? 'dsh',
+      provider: {
+        baseUrl: file.llm?.provider?.baseUrl ?? '',
+        apiKey: file.llm?.provider?.apiKey ?? '',
+        model: file.llm?.provider?.model ?? 'deepseek-chat',
+        temperature: file.llm?.provider?.temperature ?? 0.8,
+        maxTokens: file.llm?.provider?.maxTokens ?? 2048,
+        timeoutMs: file.llm?.provider?.timeoutMs ?? 120000,
+        historyTurns: file.llm?.provider?.historyTurns ?? 6,
+        maxToolRounds: file.llm?.provider?.maxToolRounds ?? 8
+      }
+    },
     // 价目表覆盖项（可选）。留空即用 src/model-prices.js 的官方默认价。
     pricing: file.pricing ?? null,
     security: {
@@ -2442,6 +2461,10 @@ async function main() {
   for (const sessionId of Object.values(state.sessions)) api.events.follow(sessionId);
   const sessionPromises = new Map(); // key -> create promise（防并发重复创建）
   const promptQueues = new Map(); // key -> { queue: [], running: false }：每个 QQ 会话串行投递 DSH prompt，保证 turn 顺序
+  // 直连模式引擎与活跃会话标记：定义在 main() 前部（let），
+  // 在 deliverPromptNow 前的 9510 段完成初始化（directDeliver 依赖的函数都是声明提升或执行时读取）。
+  let directEngine = null;
+  let directActiveSessions = null;
 
   // ── Token 用量账本（控制台「令牌与花费」） ───────────────────────────────
   // 权威总量取 DSH 的 tokenUsage 投影（整条会话日志累计，含桥接启动前的历史），
@@ -2783,6 +2806,9 @@ async function main() {
     // 按 key 记账的内存态在**有映射和无映射时都要清**：一条被移出白名单、
     // 但从未成功建过会话的 key 同样会留下限流时间戳与失败标记。
     forgetConversationCaches(key);
+    // 直连模式的会话上下文与活跃标记同步清理（空值安全：direct 引擎未初始化时无操作）
+    try { directEngine?.clearHistory(key); } catch {}
+    try { directActiveSessions?.delete(key); } catch {}
     if (!sessionId) return;
     reverse.delete(sessionId);
     collectors.delete(sessionId);
@@ -4404,6 +4430,91 @@ async function main() {
           } catch (error) {
             if (popSilent) popSilent();
             sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+          }
+          return;
+        }
+        // ── LLM 直连模式管理 API（控制台专用；带 x-agent-token 的请求由上文白名单一律 403）──
+        if (req.method === 'GET' && url.pathname === '/api/llm/config') {
+          const p = cfg.llm?.provider ?? {};
+          const key = String(p.apiKey ?? '');
+          sendJson({
+            ok: true,
+            mode: String(cfg.llm?.mode ?? 'dsh'),
+            provider: {
+              baseUrl: String(p.baseUrl ?? ''),
+              apiKey: key ? `${key.slice(0, 6)}…${key.slice(-2)}` : '',
+              apiKeySet: !!key,
+              model: String(p.model ?? ''),
+              temperature: Number(p.temperature) || 0.8,
+              maxTokens: Number(p.maxTokens) || 2048,
+              timeoutMs: Number(p.timeoutMs) || 120000,
+              historyTurns: Number(p.historyTurns) || 6,
+              maxToolRounds: Number(p.maxToolRounds) || 8
+            }
+          });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/llm/config') {
+          const body = await readBody();
+          const mode = String(body.mode ?? '').trim();
+          if (mode !== 'dsh' && mode !== 'direct') { sendJson({ ok: false, error: 'mode 必须是 dsh 或 direct' }, 400); return; }
+          const newProvider = {
+            baseUrl: String(body.baseUrl ?? '').trim(),
+            apiKey: body.apiKey === undefined || body.apiKey === null ? (cfg.llm?.provider?.apiKey ?? '') : String(body.apiKey).trim(),
+            model: String(body.model ?? '').trim(),
+            temperature: Number(body.temperature) || 0.8,
+            maxTokens: Number(body.maxTokens) || 2048,
+            timeoutMs: Number(body.timeoutMs) || 120000,
+            historyTurns: Number(body.historyTurns) || 6,
+            maxToolRounds: Number(body.maxToolRounds) || 8
+          };
+          if (mode === 'direct' && (!newProvider.baseUrl || !newProvider.apiKey || !newProvider.model)) {
+            sendJson({ ok: false, error: '直连模式需要 baseUrl / apiKey / model 三者齐全' }, 400);
+            return;
+          }
+          try {
+            const p = path.join(ROOT, 'config.json');
+            const file = readJsonSafe(p, null, true) ?? {};
+            file.llm = { mode, provider: { ...(file.llm?.provider ?? {}), ...newProvider } };
+            fs.writeFileSync(p, JSON.stringify(file, null, 2) + '\n', 'utf8');
+          } catch (error) {
+            sendJson({ ok: false, error: `保存配置失败：${error?.message ?? error}` }, 500);
+            return;
+          }
+          cfg.llm = { mode, provider: newProvider }; // 热生效，无需重启
+          log(`[llm] 配置已更新：mode=${mode}，model=${newProvider.model || '(未设)'}，baseUrl=${newProvider.baseUrl || '(未设)'}`);
+          sendJson({ ok: true });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/llm/status') {
+          const p = cfg.llm?.provider ?? {};
+          sendJson({
+            ok: true,
+            mode: String(cfg.llm?.mode ?? 'dsh'),
+            directReady: directActive() && !!(p.baseUrl && p.apiKey && p.model),
+            provider: {
+              baseUrl: String(p.baseUrl ?? ''),
+              apiKeySet: !!p.apiKey,
+              model: String(p.model ?? ''),
+              temperature: Number(p.temperature) || 0.8,
+              maxTokens: Number(p.maxTokens) || 2048
+            }
+          });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/llm/test') {
+          // 连通性测试：发一个最小 chat 请求，不进入任何对话历史
+          const p = cfg.llm?.provider ?? {};
+          if (!p.baseUrl || !p.apiKey || !p.model) { sendJson({ ok: false, error: '请先填写 baseUrl / apiKey / model' }, 400); return; }
+          try {
+            const r = await chatCompletions({
+              baseUrl: p.baseUrl, apiKey: p.apiKey, model: p.model,
+              messages: [{ role: 'user', content: '请只回复两个字：正常' }],
+              temperature: 0, maxTokens: 16, timeoutMs: 30000
+            });
+            sendJson({ ok: true, reply: String(r.text ?? '').slice(0, 120), usage: r.usage ?? null });
+          } catch (error) {
+            sendJson({ ok: false, error: `${error?.code ?? 'ERROR'}：${error?.message ?? error}` }, 502);
           }
           return;
         }
@@ -9489,9 +9600,110 @@ async function main() {
     return p;
   }
 
+  // ── 直连模式（双模式并存，llm.mode === 'direct'）──────────────────────────
+  // 不调用 DSH Web API：由 direct-engine 直接请求 OpenAI 兼容 LLM 端点。
+  // 上下文组装与 DSH 模式完全同源（buildWakePromptV2 / withSlangContext / media），
+  // 工具面在 reserved2 下复用 MCP 工具定义（function calling），执行仍走原 handler
+  // （环回桥接校验：发送白名单 / 敏感拦截 / 额度 / 暂停开关一个不少）。
+  directEngine = createDirectEngine({    getProvider: () => ({
+      baseUrl: String(cfg.llm?.provider?.baseUrl ?? '').trim(),
+      apiKey: String(cfg.llm?.provider?.apiKey ?? '').trim(),
+      model: String(cfg.llm?.provider?.model ?? '').trim(),
+      temperature: Number(cfg.llm?.provider?.temperature) || 0.8,
+      maxTokens: Number(cfg.llm?.provider?.maxTokens) || 2048,
+      timeoutMs: Number(cfg.llm?.provider?.timeoutMs) || 120000,
+      historyTurns: Number(cfg.llm?.provider?.historyTurns) || 6,
+      maxToolRounds: Number(cfg.llm?.provider?.maxToolRounds) || 8
+    }),
+    getTools: () => {
+      // 直连模式仅在 reserved2（二代仿真，AI 自主收发）下启用工具面，
+      // 与 MCP 的发送工具边界一致；chat/reserved 的回复走自动转发，不需要工具。
+      if (currentMode !== 'reserved2') return null;
+      const defs = getDirectToolDefs();
+      return defs.length ? defs : null;
+    },
+    executeTool: async (name, args, ctx) => {
+      const def = getDirectToolDefs().find((d) => d.name === name);
+      if (!def) return { text: `工具不存在：${name}`, isError: true };
+      try {
+        const raw = await def.execute(args ?? {}, ctx);
+        if (raw && typeof raw === 'object' && Array.isArray(raw.content)) {
+          const text = raw.content.map((c) => (c?.type === 'text' ? c.text : '[非文本]')).filter(Boolean).join('\n');
+          return { text: text || '（工具已执行）', isError: raw.isError === true };
+        }
+        return { text: String(raw ?? '') };
+      } catch (error) {
+        return { text: `工具执行失败：${error?.message ?? error}`, isError: true };
+      }
+    }
+  });
+  // direct 模式的「会话已存在」标记：用于判断首条消息（fresh=true，清空历史）。
+  directActiveSessions = new Set();
+  function directActive() {
+    return String(cfg.llm?.mode ?? 'dsh') === 'direct';
+  }
+
+  async function directDeliver(key, promptText, opts = {}) {
+    const provider = cfg.llm?.provider ?? {};
+    // 与 DSH 侧一致的唤醒守卫：模式切换 / 暂停 / 关闭时丢弃旧唤醒
+    if (opts.wakeReason && (currentMode !== 'reserved2' || socialV2.paused || cfg.socialV2?.enabled === false)) {
+      pendingWakeKeys.delete(key);
+      disarmPendingWakeLease(key);
+      return { ok: true, skipped: true };
+    }
+    if (!provider.baseUrl || !provider.apiKey || !provider.model) {
+      log(`⚠️ 直连模式未配置完整（baseUrl/apiKey/model），投递失败 ${key}`);
+      if (!opts.silent) await sendToQQ(key, '⚠️ AI 直连模式未配置完成：请在控制台「LLM 直连」页填写 baseUrl / API Key / 模型。');
+      return { ok: false, error: '直连模式未配置（llm.provider）' };
+    }
+    // 复用与 DSH 模式完全相同的唤醒上下文组装（记忆/好感/性格/黑话/状态全继承）
+    if (opts.wakeReason) {
+      promptText = buildWakePromptV2(key, opts.wakeReason);
+      const wakeSnapshot = buildWakeSnapshotV2(key);
+      if (wakeSnapshot) {
+        promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
+      }
+    }
+    let content = [{ type: 'text', text: withSlangContext(promptText) }];
+    if (Array.isArray(opts.media) && opts.media.length > 0) {
+      const imageParts = await resolveMediaList(opts.media);
+      content = [{ type: 'text', text: withSlangContext(promptText) }, ...imageParts];
+    }
+    const fresh = !directActiveSessions.has(key);
+    directActiveSessions.add(key);
+    // 稳定人格/角色放 system（长期不变），动态上下文（记忆/状态/时间）在 user 内容块——
+    // 参考 astrbot：动态内容不进 system_prompt，避免破坏模型端提示词缓存、多烧 token。
+    const system = currentRoleHint() || '';
+    let out;
+    try {
+      out = await directEngine.chat(key, { system, userContent: content, opts: { fresh } });
+    } catch (error) {
+      const code = error?.code ?? 'ERROR';
+      log(`直连投递失败 ${key}（${code}）: ${error?.message ?? error}`);
+      if (!opts.silent) {
+        const hint = code === 'CONFIG' || code === 'AUTH' ? '（请检查控制台「LLM 直连」配置）' : '（请稍后重试）';
+        await sendToQQ(key, `⚠️ AI 响应失败：${error?.message ?? error}${hint}`);
+      }
+      return { ok: false, error: error?.message ?? String(error) };
+    }
+    // 与 DSH 投递一致：快照「可见即清」。直连模式同步完成整轮（读→回复→收尾），
+    // 消息可见性由 AI 自己的工具调用（qq_mark_read / qq_set_wake_config）推进，
+    // 不再额外 noteModelMessagesV2 —— 避免与 AI 自己调用产生双重游标推进。
+    const replyText = out?.text;
+    if (replyText && !opts.silent && currentMode !== 'reserved2') {
+      await auditAndSend(key, mdToPlain(replyText));
+    }
+    // reserved2：AI 的发言必须通过工具（qq_send_message 等）发送，纯文本不自动发出
+    // （与 DSH 模式一致）；工具执行走 executeTool → 原 handler → 环回桥接校验。
+    return { ok: true };
+  }
+
   // 实际的 DSH prompt 投递（不再直接对外暴露，统一走 promptQueues 串行队列）。
   async function deliverPromptNow(key, promptText, opts = {}) {
     if (!isSessionAllowedInCurrentMode(key)) throw new Error(`当前模式不允许会话 ${key}`);
+    if (directActive()) {
+      return await directDeliver(key, promptText, opts);
+    }
     // Recheck queued wakes at dispatch time: no model call while paused/disabled
     // and no reserved2 prompt leaking into an ordinary chat after a mode switch.
     const wakeBlocked = () => opts.wakeReason && (currentMode !== 'reserved2' || socialV2.paused || cfg.socialV2?.enabled === false);
@@ -11282,6 +11494,9 @@ async function main() {
       }
       if (plainContent === '/reset' || plainContent === '/new') {
         const old = state.sessions[key];
+        // 直连模式没有 DSH 会话：重置时清掉本地直连上下文（fresh 判定用）
+        try { directEngine?.clearHistory(key); } catch {}
+        try { directActiveSessions?.delete(key); } catch {}
         if (old) {
           sessionEpoch++;
           delete state.sessions[key];

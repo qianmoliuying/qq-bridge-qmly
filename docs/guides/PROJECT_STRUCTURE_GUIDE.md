@@ -64,7 +64,9 @@ qq-bridge/
 │   ├── memory-core.js        #   ★ 记忆权重/标签/倒排索引/紧凑格式化（§3.8）
 │   ├── affinity.js           #   ★ 好感度引擎：规则增减 + AI 补判 + 等级配额（§3.8）
 │   ├── personality.js        #   ★ 性格统计初判 + AI 精修 + 倾向映射（§3.8）
-│   └── memory-store.js       #   ★ SQLite 层：memories / affinity_history / personality（§3.8）
+│   ├── memory-store.js       #   ★ SQLite 层：memories / affinity_history / personality（§3.8）
+│   ├── llm-client.js         #   ★ 零依赖 OpenAI 兼容客户端：请求/错误分类/参数容错（§3.10）
+│   └── direct-engine.js      #   ★ 直连会话引擎：双模式路由 + function calling 工具循环（§3.10）
 ├── launcher/                  # ★ 一键版启动器（SEA 打包，§3.9）
 │   ├── launcher.cjs          #   单文件启动器（编排 DSH/SnowLuma/bridge + 汉化菜单 + --check）
 │   ├── build.mjs             #   SEA 构建脚本（便携目录 + postject 注入 + 冒烟）
@@ -194,6 +196,23 @@ qq-bridge/
 - **合规**：SnowLuma 只探测+引导（用户拍板）；DSH 由 DeepSeek Harness 桌面版提供；`config.json` / `state/` 等敏感数据不进便携包也不进仓库。
 - **重新构建**：`node launcher/build.mjs`（需 Node ≥22 + 网络 `npx postject`）。
 
+### 3.10 LLM 直连双模式（新增，摆脱 DSH Web API 依赖）
+
+参考 [astrbot](https://github.com/AstrBotDevs/AstrBot) 的 Provider 抽象 / Handler 分层 / FunctionTool 工具面 / WebUI 管理面板设计，桥接新增一条**不依赖 DSH 进程**的投递链路，与原有 DSH 路径**双模式并存**：
+
+| 文件 | 职责 |
+| --- | --- |
+| `src/llm-client.js` | **零依赖 OpenAI 兼容客户端**（`node:http/https`，非流式 `chat/completions`）：请求构造（`${base}/chat/completions`）、响应解析（text / tool_calls / usage）、**错误分类**（`AUTH` 401 / `RATE` 429 / `SERVER` 5xx / `BAD` 4xx / `NETWORK` / `TIMEOUT` / `PARSE` / `CONFIG`）、可重试集合（NETWORK/TIMEOUT/SERVER/RATE）、`parseToolArguments` 容错（`` ```json `` 围栏剥离） |
+| `src/direct-engine.js` | **直连会话引擎** `createDirectEngine(deps)`：依赖注入 `getProvider / getTools / executeTool`；每会话内存历史（默认 6 轮×2 条截断）；**function calling 工具循环**（上限默认 8 轮，触顶给模型一次「直接回答」机会）；顺序执行工具（避免依赖次序问题）；`chat(key, req)` 的 `opts.fresh` 清历史（`/reset`） |
+| `src/mcp-snowluma-safe.js` | 重构：`server.tool` 包装**收集器**把工具定义（name/description/参数 JSON Schema/execute handler）推进 `TOOL_DEFS`，导出 `getToolDefs()`；参数 schema 兼容 zod（`toJSONSchema`）与普通对象；底部 `isMain` 守卫（被 import 时不启动 stdio） |
+| `src/bridge.js` | 双模式路由：`loadConfig` 增 `llm.mode: "dsh" | "direct"` + provider 段；`deliverPromptNow` 开头拦截直连；`directDeliver` 复用 `buildWakePromptV2 / withSlangContext / resolveMediaList`（记忆/好感/性格/黑话全注入）；管理端点 `/api/llm/config|status|test` |
+| `public/console.html` | 新增「LLM 直连」页：后端切换、Provider 表单（apiKey 不回显）、保存/测试连通性、记忆/好感/性格管理（加载好感表 / 检索记忆 / 立即归档） |
+
+**动态上下文设计（参考 astrbot）**：记忆/好感/性格/黑话等动态内容放 **user 消息**而非 `system_prompt`（`system` 只放 `currentRoleHint()` 稳定角色卡），避免破坏服务端提示词缓存、避免每个请求重复烧 token。
+
+**模式行为**：`direct` 下 chat / 一代仿真 / 管理员私聊的回复自动转发（`auditAndSend`，MD 转纯文本）；`reserved2`（二代仿真）AI 自主收发走 **function calling**，工具与 DSH 侧共用同一份 MCP 工具定义（40 个），执行仍走原 handler 的安全校验（白名单/敏感拦截/额度/暂停开关一个不少）。
+
+**测试**：`scripts/test-direct-engine.mjs`（30 项断言）用本地 mock OpenAI 端点离线跑（文本/tool_calls 解析、错误分类、参数容错、工具循环、触顶收敛、fresh 语义、会话隔离、自动重试），已并入 `npm run test:audit`。
 
 
 ---

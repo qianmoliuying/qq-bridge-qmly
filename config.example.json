@@ -9,6 +9,19 @@
     "authPrefix": "Bearer",
     "allowRemote": false
   },
+  "llm": {
+    "mode": "dsh",
+    "provider": {
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKey": "",
+      "model": "deepseek-chat",
+      "temperature": 0.8,
+      "maxTokens": 2048,
+      "timeoutMs": 120000,
+      "historyTurns": 6,
+      "maxToolRounds": 8
+    }
+  },
   "role": {
     "maxInjectChars": 6000
   },

@@ -18,6 +18,16 @@
 >    `node launcher/build.mjs`; the portable bundle ships via GitHub Releases (not in the repo).
 > 3. Regression suite `scripts/test-memory-system.mjs` (21 assertions) wired into `npm run test:audit`;
 >    code guide updated in [docs/guides/PROJECT_STRUCTURE_GUIDE.md](docs/guides/PROJECT_STRUCTURE_GUIDE.md) §3.8.
+> 4. **Dual LLM delivery modes** (`src/llm-client.js`, `src/direct-engine.js`), following the astrbot
+>    Provider abstraction and dynamic-context design: `llm.mode: "dsh" | "direct"` — `dsh` keeps the
+>    upstream DeepSeek Harness Web API path; `direct` calls any OpenAI-compatible endpoint directly
+>    (baseUrl + apiKey + model, no DSH process needed). chat / 1st-gen simulation / admin DMs reply
+>    automatically; 2nd-gen simulation (reserved2) self-driven turns run **function calling** with the same
+>    40 MCP tool definitions (execution still goes through the original handlers' safety checks). Console
+>    gains an "LLM 直连" page (mode switch, provider form, connectivity test, memory/affinity/personality
+>    management). Dynamic context goes in **user messages**, not system_prompt, to keep server-side prompt
+>    caching intact. Tests: `scripts/test-direct-engine.mjs` (30 assertions, offline mock LLM endpoint)
+>    wired into `npm run test:audit`.
 >
 > **Relation to upstream**: this branch runs standalone and can be merged back upstream at any time. Release tags
 > follow `v<upstream-version>-qmly.<n>` (current: `v0.2.1-qmly.1`). Usage: [launcher/README-一键启动.txt](launcher/README-一键启动.txt).

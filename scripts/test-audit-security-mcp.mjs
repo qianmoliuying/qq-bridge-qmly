@@ -80,6 +80,8 @@ function loadSnowlumaTools(fetchImpl, fixtureConfig = null, httpImpl = null, fix
   // vm 里没有 ESM 的 import.meta，把模块顶部的 __dirname 推导整段替换成固定值。
   const source = fs.readFileSync(new URL('../src/mcp-snowluma-safe.js', import.meta.url), 'utf8')
     .replace(/^import .*;\r?\n/gm, '')
+    .replace(/^export function getToolDefs/gm, 'function getToolDefs') // 直连模式收集器：VM 里无人调用，去 export
+    .replace('const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;', 'const isMain = false;') // stdio 守卫在 VM 里恒不触发
     .replace("const __dirname = path.dirname(fileURLToPath(import.meta.url));", "const __dirname = '/fixture/src';")
     .replace('await server.connect(new StdioServerTransport());', 'server.connect(new StdioServerTransport());');
   class McpServer {

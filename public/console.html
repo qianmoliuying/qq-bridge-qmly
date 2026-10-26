@@ -1766,6 +1766,7 @@ button:active:not(:disabled) {
     <nav id="mainNav">
       <button data-view="overview" class="nav-item active" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span>运行总览</button>
       <button data-view="sessions" class="nav-item"><span class="nav-icon" aria-hidden="true">☷</span>会话与审批<span class="nav-count" id="pendingCount">—</span></button>
+      <button data-view="llm" class="nav-item"><span class="nav-icon" aria-hidden="true">⇄</span>LLM 直连<span class="nav-note">NEW</span></button>
       <button data-view="persona" class="nav-item"><span class="nav-icon" aria-hidden="true">◉</span>人格与角色</button>
       <div class="nav-label">聊天行为</div>
       <button data-view="social-v2" class="nav-item"><span class="nav-icon" aria-hidden="true">◈</span>二代仿真<span class="nav-note">V2</span></button>
@@ -2418,6 +2419,45 @@ button:active:not(:disabled) {
         </div>
       </details>
     </section>
+<section id="section-llm" data-page="llm" class="card span-all">
+  <h2>投递后端（双模式）</h2>
+  <div class="meta">dsh = 走 DeepSeek Harness Web API（原行为，默认）；direct = 桥接直接调用 OpenAI 兼容 LLM API（参考 astrbot Provider 设计），不依赖 DSH 进程。切换 direct 前必须先保存完整 Provider 配置。</div>
+  <div class="row" style="margin-top:10px">
+    <label style="flex:1">投递后端</label>
+    <select id="llmMode" style="max-width:240px">
+      <option value="dsh">dsh（DeepSeek Harness）</option>
+      <option value="direct">direct（直连 LLM API）</option>
+    </select>
+    <span class="meta" id="llmModeHint" style="flex:2">读取中…</span>
+  </div>
+
+  <h2 style="margin-top:18px">直连 Provider（OpenAI 兼容）</h2>
+  <div class="meta">baseUrl + apiKey + model 三项齐全才能启用 direct。apiKey 保存在本机 <code>config.json</code>，此页面不回显（留空保存 = 不修改）。</div>
+  <div class="row" style="margin-top:10px"><label style="flex:1">Base URL</label><input type="text" id="llmBaseUrl" placeholder="https://api.deepseek.com/v1" style="flex:3"></div>
+  <div class="row" style="margin-top:6px"><label style="flex:1">API Key</label><input type="password" id="llmApiKey" placeholder="sk-…（留空则不修改）" style="flex:3"></div>
+  <div class="row" style="margin-top:6px"><label style="flex:1">模型</label><input type="text" id="llmModel" placeholder="deepseek-chat" style="flex:3"></div>
+  <div class="row" style="margin-top:6px"><label style="flex:1">temperature</label><input type="number" id="llmTemp" step="0.1" min="0" max="2" style="flex:1"><label style="flex:1">maxTokens</label><input type="number" id="llmMaxTokens" step="64" min="256" style="flex:1"></div>
+  <div class="row" style="margin-top:6px"><label style="flex:1">historyTurns（上下文轮数）</label><input type="number" id="llmHistoryTurns" min="1" max="30" style="flex:1"><label style="flex:1">maxToolRounds</label><input type="number" id="llmMaxToolRounds" min="1" max="20" style="flex:1"></div>
+  <div class="row" style="margin-top:6px"><label style="flex:1">请求超时（ms）</label><input type="number" id="llmTimeoutMs" min="5000" style="flex:1"></div>
+  <div class="row" style="margin-top:10px">
+    <button id="llmSave" style="font-weight:bold;padding:6px 14px">保存配置</button>
+    <button id="llmTest">测试连通性</button>
+    <span class="meta" id="llmTestResult" style="flex:2"></span>
+  </div>
+  <div class="meta" style="margin-top:8px">direct 模式下：chat / 一代仿真 / 管理员私聊的回复自动转发；二代仿真（reserved2）的 AI 自主收发走 function calling，工具与 DSH 侧共用同一份定义（工具开关改动后需重启生效）。</div>
+
+  <h2 style="margin-top:18px">记忆 / 好感 / 性格管理</h2>
+  <div class="meta">与 DSH 模式共用同一套记忆库（SQLite，<code>state/memory.db</code>）。好感度越高，注入上下文的记忆配额越多（3 / 5 / 8 / 12 条）；性格标签由规则初判 + AI 精修，随唤醒提示携带倾向。每日 3:00 自动归档冷记忆。</div>
+  <div class="row" style="margin-top:10px"><label style="flex:1">会话 key</label><input type="text" id="llmMemKey" placeholder="group:群号 或 private:QQ号" style="flex:3"></div>
+  <div class="row" style="margin-top:6px"><label style="flex:1">关键词检索记忆</label><input type="text" id="llmMemQuery" placeholder="如：生日、爱吃的、讨厌的" style="flex:3"></div>
+  <div class="row" style="margin-top:10px">
+    <button id="llmAffinityLoad">加载好感/性格表</button>
+    <button id="llmMemSearch">检索记忆</button>
+    <button id="llmArchiveNow" class="danger">立即归档冷记忆</button>
+  </div>
+  <div id="llmAffinityTable"></div>
+  <div id="llmMemResults"></div>
+</section>
 <section id="section-reference" data-page="reference" class="card span-all">
       <h2>DSH 侧 MCP 工具</h2>
       <div class="meta">由 qq-bridge 的 MCP server 提供给 DSH agent；修改后需重启 DSH 才会刷新工具 schema。</div>
@@ -4428,6 +4468,7 @@ const consolePages = {
   sessions: ['会话与审批', '让每一段对话，都有迹可循。', '查看 QQ 与 DSH 的会话映射，以及等待你回复的审批和提问。'],
   persona: ['人格与角色', '给你的伙伴，一点独特个性。', '选择已有角色，或用自己的语言写下新的性格与表达方式。'],
   'social-v2': ['二代仿真', '自主参与，恰到好处。', '管理 AI 的工具、唤醒与发言节奏。展开需要调整的分组，修改后保存参数。'],
+  llm: ['LLM 直连', '直连大模型，摆脱 DSH 依赖。', '双模式并存：dsh 沿用 DeepSeek Harness；direct 由桥接直接调用 OpenAI 兼容端点（参考 astrbot Provider 设计）。'],
   'social-v1': ['一代仿真', '为自然对话，设定合适的节奏。', '调整参与概率、活跃周期和分条发送；所有配置项完整保留。'],
   slang: ['黑话词库', '读懂群聊里的，言外之意。', '从候选到确认，让 AI 逐渐熟悉大家的表达习惯。'],
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
@@ -4462,6 +4503,8 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   closeConsoleSearch();
   // 语音库按需加载：进入二代仿真页时才探测（避免每次开控制台都压网关）。
   if (page === 'social-v2' && typeof loadVoiceLibrary === 'function') loadVoiceLibrary();
+  // LLM 直连页按需加载配置（切换后端/Provider 时进入才拉取）
+  if (page === 'llm' && typeof loadLlm === 'function') loadLlm();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
     document.getElementById(target || 'mainContent')?.scrollIntoView({ block: 'start', behavior: 'instant' });
@@ -5022,6 +5065,109 @@ document.getElementById('usageRefresh').addEventListener('click', () => {
   refreshUsageRecent();
   showConsoleToast('用量已刷新');
 });
+
+// ── LLM 直连页 ──────────────────────────────────────────────────────────
+async function refreshLlm() {
+  const sel = document.getElementById('llmMode');
+  const hint = document.getElementById('llmModeHint');
+  if (!sel || !hint) return;
+  try {
+    const s = await api('/api/llm/status');
+    if (sel.value !== s.mode) sel.value = s.mode;
+    hint.textContent = s.mode === 'direct'
+      ? (s.directReady ? '直连模式生效中 · Provider 已配置完整' : '直连模式生效中，但 Provider 未配置完整（投递会失败）')
+      : 'DSH 模式（默认，走 DeepSeek Harness Web API）';
+  } catch { /* 桥接未就绪时静默 */ }
+}
+async function loadLlm() {
+  try {
+    const r = await api('/api/llm/config');
+    if (!r.ok) return;
+    document.getElementById('llmMode').value = r.mode;
+    document.getElementById('llmBaseUrl').value = r.provider.baseUrl || '';
+    document.getElementById('llmApiKey').placeholder = r.provider.apiKeySet
+      ? '（已配置 ' + r.provider.apiKey + '，留空不修改）' : 'sk-…';
+    document.getElementById('llmModel').value = r.provider.model || '';
+    document.getElementById('llmTemp').value = r.provider.temperature;
+    document.getElementById('llmMaxTokens').value = r.provider.maxTokens;
+    document.getElementById('llmHistoryTurns').value = r.provider.historyTurns;
+    document.getElementById('llmMaxToolRounds').value = r.provider.maxToolRounds;
+    document.getElementById('llmTimeoutMs').value = r.provider.timeoutMs;
+    refreshLlm();
+  } catch { /* 桥接未就绪时静默 */ }
+}
+async function saveLlm() {
+  const body = {
+    mode: document.getElementById('llmMode').value,
+    baseUrl: document.getElementById('llmBaseUrl').value.trim(),
+    apiKey: document.getElementById('llmApiKey').value.trim() || null, // null = 不修改
+    model: document.getElementById('llmModel').value.trim(),
+    temperature: Number(document.getElementById('llmTemp').value) || 0.8,
+    maxTokens: Number(document.getElementById('llmMaxTokens').value) || 2048,
+    historyTurns: Number(document.getElementById('llmHistoryTurns').value) || 6,
+    maxToolRounds: Number(document.getElementById('llmMaxToolRounds').value) || 8,
+    timeoutMs: Number(document.getElementById('llmTimeoutMs').value) || 120000
+  };
+  try {
+    const r = await api('/api/llm/config', 'POST', body);
+    showConsoleToast(r.ok ? 'LLM 配置已保存并热生效' : ('保存失败：' + (r.error || '未知错误')));
+    if (r.ok) loadLlm();
+  } catch (error) {
+    showConsoleToast('保存失败：' + (error?.message || '未知错误'));
+  }
+}
+async function testLlm() {
+  const el = document.getElementById('llmTestResult');
+  el.textContent = '测试中…';
+  try {
+    const r = await api('/api/llm/test', 'POST', {});
+    el.textContent = r.ok ? ('连通正常 · 模型回复：' + r.reply) : ('测试失败：' + (r.error || '未知错误'));
+  } catch (error) {
+    el.textContent = '测试失败：' + (error?.message || '未知错误');
+  }
+}
+async function llmAffinityLoad() {
+  const key = document.getElementById('llmMemKey').value.trim();
+  if (!key) { showConsoleToast('请先填写会话 key'); return; }
+  const box = document.getElementById('llmAffinityTable');
+  try {
+    const r = await api('/api/socialV2/affinity?key=' + encodeURIComponent(key));
+    if (!r.ok) { box.textContent = '加载失败：' + (r.error || '未知错误'); return; }
+    const rows = (r.members || []).map((m) => `<tr><td>${esc(m.name)}</td><td>${m.affinity}（${esc(m.levelLabel)}）</td><td>${esc((m.personality?.tags || []).join('、') || '—')}</td><td>${esc((m.tendency || []).join('、') || '—')}</td><td>${m.interactionCount} 次</td></tr>`).join('');
+    box.innerHTML = `<div class="meta">会话 ${esc(key)} · 整体好感 ${r.sessionAffinity}（记忆配额 ${r.sessionQuota} 条）</div>
+      <table style="width:100%;margin-top:6px;border-collapse:collapse"><thead><tr><th align="left">成员</th><th align="left">好感</th><th align="left">性格标签</th><th align="left">倾向</th><th align="left">互动</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="meta">暂无数据</td></tr>'}</tbody></table>`;
+  } catch (error) {
+    box.textContent = '加载失败：' + (error?.message || '未知错误');
+  }
+}
+async function llmMemSearch() {
+  const key = document.getElementById('llmMemKey').value.trim();
+  const q = document.getElementById('llmMemQuery').value.trim();
+  if (!key || !q) { showConsoleToast('请先填写会话 key 与检索词'); return; }
+  const box = document.getElementById('llmMemResults');
+  try {
+    const r = await api('/api/socialV2/memory-search?key=' + encodeURIComponent(key) + '&q=' + encodeURIComponent(q));
+    if (!r.ok) { box.textContent = '检索失败：' + (r.error || '未知错误'); return; }
+    const all = [...(r.hits || []), ...(r.storeHits || [])];
+    const lis = all.map((h) => `<li style="margin:2px 0">${esc(h.block || h.text)}</li>`).join('');
+    box.innerHTML = `<div class="meta">命中 ${all.length} 条（内存优先，数据库兜底）</div><ul style="margin:6px 0 0 18px">${lis || '<li class="meta">无命中</li>'}</ul>`;
+  } catch (error) {
+    box.textContent = '检索失败：' + (error?.message || '未知错误');
+  }
+}
+async function llmArchiveNow() {
+  try {
+    const r = await api('/api/socialV2/archive-now', 'POST', {});
+    showConsoleToast(r.ok ? '冷记忆归档完成' : ('归档失败：' + (r.error || '未知错误')));
+  } catch (error) {
+    showConsoleToast('归档失败：' + (error?.message || '未知错误'));
+  }
+}
+document.getElementById('llmSave').addEventListener('click', saveLlm);
+document.getElementById('llmTest').addEventListener('click', testLlm);
+document.getElementById('llmAffinityLoad').addEventListener('click', llmAffinityLoad);
+document.getElementById('llmMemSearch').addEventListener('click', llmMemSearch);
+document.getElementById('llmArchiveNow').addEventListener('click', llmArchiveNow);
 document.getElementById('usageTurnsLoad').addEventListener('click', () => refreshUsageTurns());
 document.getElementById('usageKeySelect').addEventListener('change', (ev) => {
   usageSelectedKey = ev.target.value;
@@ -5047,8 +5193,10 @@ document.getElementById('usageClear').addEventListener('click', async () => {
 
 setConsolePage(location.hash.slice(1), { updateHash:false });
 
-refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
+refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent(); loadLlm();
 setInterval(() => { refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshSlang(); }, 3000);
+// LLM 直连页状态徽标只在本页可见时轮询
+setInterval(() => { if (currentConsolePage !== 'llm') return; refreshLlm(); }, 3000);
 // 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。
 setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); refreshUsageChart(); refreshUsageRecent(); }, 3000);
 // 主题切换（纯前端，不发任何请求；选择写入 localStorage，未选择时跟随系统）
