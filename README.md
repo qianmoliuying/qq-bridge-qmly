@@ -1,5 +1,30 @@
 # QQ ↔ DeepSeek Harness 桥接
 
+> 🍴 **本分支（`qq-bridge-qmly`）说明**
+>
+> 本仓库是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge)（上游 `v0.2.1-r1`）的 **fork / 二次开发分支**。
+> 原分支所有功能与文档均保留，本分支在其上**新增**以下内容：
+>
+> 1. **记忆 / 好感度 / 性格系统**（`src/memory-core.js`、`src/affinity.js`、`src/personality.js`、`src/memory-store.js`）：
+>    记忆权重化（重要性 × 时间衰减 × 好感系数）、自动标签分类、SQLite 持久化（`state/memory.db`，better-sqlite3）、
+>    每日 3:00 冷数据归档、中文倒排索引秒级命中引用、上下文按好感度配额注入（高好感注入更多记忆）、
+>    对话者性格规则初判 + AI 精修、上下文携带「好感度 + 性格判断 → 交流倾向」；MCP 新增 `qq_affinity_query` / `qq_memory_search`。
+> 2. **一键版启动器**（`launcher/`）：把 DSH + SnowLuma + 桥接编排成「双击 exe 一键启动」的便携版
+>    （Node SEA 打包 `一键启动.exe`，汉化菜单、统一日志、`--check` 自检），构建脚本 `launcher/build.mjs`。
+> 3. 回归测试 `scripts/test-memory-system.mjs`（21 项断言）并入 `npm run test:audit`；代码导读更新见
+>    [docs/guides/PROJECT_STRUCTURE_GUIDE.md](docs/guides/PROJECT_STRUCTURE_GUIDE.md) §3.8。
+>
+> **与原分支的关系**：本分支可独立运行，也可随时合回上游；发布 tag 遵循 `v<上游版本>-qmly.<序号>` 命名
+> （本分支当前 `v0.2.1-qmly.1`）。详细区别与使用见 [launcher/README-一键启动.txt](launcher/README-一键启动.txt)。
+>
+> **合规声明（遵守原分支开源规则）**：
+> - 本分支遵循原分支 **MIT License**（`LICENSE` 保留原版权声明，未改动）。
+> - SnowLuma 合规边界与原分支一致：**不安装、不复制、不打包、不自动部署 SnowLuma 本体**（EULA §5.4，
+>   原生组件属专有组件）；一键版启动器仅**探测 + 引导**用户自行安装的 SnowLuma，DSH 由 DeepSeek Harness 桌面版提供。
+> - 数据隐私：`config.json`（含 QQ token）、`state/`（含记忆库/会话映射）、`audio/` 等本地敏感数据一律**不入库**。
+>
+> 以下为原分支 README 正文（功能、架构、安装与使用均以原分支为准，本分支新增内容见上）。
+
 **English**: [README.en.md](README.en.md) | **中文**: [README.md](README.md)
 
 > 🗂️ 文档索引（全部文档一句话说明 + 是否仍然有效）见 **[docs/README.md](docs/README.md)**；仓库目录/脚本命名约定见 **[docs/FOLDER_MAP.md](docs/FOLDER_MAP.md)**。

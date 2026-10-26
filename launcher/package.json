@@ -1,0 +1,6 @@
+{
+  "name": "qq-bridge-launcher",
+  "private": true,
+  "type": "module",
+  "description": "一键启动器源码（SEA 打包入口）。仅用于构建，不发布。"
+}

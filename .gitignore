@@ -66,3 +66,10 @@ docs/guides/VOICE.md
 # 语音库（用户个人音频素材，config.json 的 socialV2.voice.dir 指向此处）
 audio/
 
+# ── 一键版构建产物 ────────────────────────────────────────────────
+# dist/ 是一键版便携目录（含 exe 与依赖副本，217MB+），发布到 GitHub Releases，
+# 不进仓库；launcher 的 SEA 构建临时文件同理。
+dist/
+launcher/sea-config.json
+launcher/sea-prep.blob
+
